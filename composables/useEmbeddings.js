@@ -31,7 +31,23 @@ export async function getEmbeddings(texts, apiKey, model = "text-embedding-3-sma
   return response.data.map((item) => item.embedding);
 }
 
-export async function classifyResponses(responses, categories, question, apiKey) {
+export function recalculatePositions(originalData, spreadFactor) {
+  const positions = originalData.magneticForces.map(([forceA, forceB]) => {
+    const force = forceB - forceA
+    // Use same exponent as graph for consistency
+    const exponent = 1 / (spreadFactor / 5 + 1) // Inverse the exponent
+    // Apply inverse power transform while preserving sign
+    const transformedForce = Math.sign(force) * Math.pow(Math.abs(force), exponent)
+    return [Math.tanh(transformedForce), 0] // Keep using tanh to maintain [-1,1] bounds
+  });
+
+  return {
+    responses: positions,
+    categories: [[-1, 0], [1, 0]]
+  };
+}
+
+export async function classifyResponses(responses, categories, question, apiKey, spreadFactor = 1) {
   const categoryPrompts = categories.map(cat => 
     `Question: ${question}\nUne réponse typiquement ${cat}`
   );
@@ -73,17 +89,30 @@ export async function classifyResponses(responses, categories, question, apiKey)
     };
   });
 
+  // Store original magnetic forces
+  const originalData = {
+    magneticForces: results.map(r => r.magneticForce),
+    responses,
+    categories
+  };
+
   // Calculate 1D positions
-  const responsePositions1D = results.map(result => {
-    const [forceA, forceB] = result.magneticForce;
-    return [Math.tanh((forceB - forceA) * 2), 0];
-  });
+  const reducedEmbeddings = recalculatePositions(originalData, spreadFactor);
 
   return {
     results,
-    reducedEmbeddings: {
-      responses: responsePositions1D,
-      categories: [[-1, 0], [1, 0]]
-    }
+    reducedEmbeddings,
+    originalData
   };
+}
+
+export async function comparePromptSets(responses, promptSets, question, apiKey) {
+  const results = {};
+  
+  for (const [setName, categories] of Object.entries(promptSets)) {
+    const classification = await classifyResponses(responses, categories, question, apiKey);
+    results[setName] = classification;
+  }
+  
+  return results;
 }
